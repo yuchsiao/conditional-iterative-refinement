@@ -414,14 +414,20 @@ def visualize(tbx, pred_dict, eval_path, step, split, num_visuals):
         context = example['context']
         answers = example['answers']
 
-        gold = answers[0] if answers else 'N/A'
+        # gold = answers[0] if answers else 'N/A'
+        sep = "###"
+        gold = sep.join(answers) if answers else 'N/A'
         tbl_fmt = ('- **Question:** {}\n'
                    + '- **Context:** {}\n'
                    + '- **Answer:** {}\n'
                    + '- **Prediction:** {}')
-        tbx.add_text(tag='{}/{}_of_{}'.format(split, i + 1, num_visuals),
-                     text_string=tbl_fmt.format(question, context, gold, pred),
-                     global_step=step)
+        # tbx.add_text(tag='{}/{}_of_{}'.format(split, i + 1, num_visuals),
+        #              text_string=tbl_fmt.format(question, context, gold, pred),
+        #              global_step=step)
+        tbx.add_text(tag='{}/step_{}'.format(split, step),
+                     text_string=tbl_fmt.format(question, context, gold, pred)
+                     )
+                     # global_step=i + 1)
 
 
 def save_preds(preds, save_dir, file_name='predictions.csv'):
