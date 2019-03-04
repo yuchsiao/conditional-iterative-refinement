@@ -6,3 +6,4 @@ data/
 save/
 **/*.swp
 **/*.tar.gz
+**/.ipynb_checkpoints
