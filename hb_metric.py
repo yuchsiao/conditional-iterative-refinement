@@ -36,23 +36,27 @@ def eval_dicts(gold_dict, pred_dict, no_answer=True):
     return eval_dict
 
 
-def eval_dicts_uuid(gold_dict: dict, pred_dict: dict, no_answer:bool=True) -> dict:
+def extract_eval_answers(gold_dict):
     """
+    Extract eval answers from eval.json
+    :param gold_dict: eval.json file from project template
+    :return: dict from uuid to list of answers
+    """
+    ans = {}
+    n = len(gold_dict)
+    for i in range(1, n+1):
+        ans[gold_dict[str(i)]["uuid"]] = gold_dict[str(i)]["answers"]
+    return ans
 
+
+def eval_dicts_uuid(gold_dict: dict, pred_dict: dict, no_answer: bool=True) -> dict:
+    """
+    Evaluate
     :param gold_dict: eval.json file from project template
     :param pred_dict: key-value pairs for each uuid (maybe missing)
     :param no_answer: bool for squad v2 no answer cases
     :return: dict of performance numbers
     """
-
-    def extract_answers(gold_dict):
-        ans = {}
-        n = len(gold_dict)
-        for i in range(1, n+1):
-            ans[gold_dict[str(i)]["uuid"]] = gold_dict[str(i)]["answers"]
-        return ans
-
-    gold_dict = extract_answers(gold_dict)
 
     avna = f1 = em = total = 0
     for key, value in gold_dict.items():

@@ -1,10 +1,9 @@
 import argparse
-import datetime
 import logging
 import os
 import json
 
-from hb_metric import eval_dicts_uuid
+from hb_metric import eval_dicts_uuid, extract_eval_answers
 
 
 def parse_args():
@@ -24,20 +23,12 @@ def parse_args():
 args = parse_args()
 
 NAME = 'eval'
-# LOGGER_NAME = '[{}]'.format(NAME)
-# ROOT = '.'
-# PROCESS_START_TIME = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
 formatter = logging.Formatter('%(asctime)s %(name)12s [%(levelname)s]\t%(message)s')
 ch = logging.StreamHandler()
 ch.setFormatter(formatter)
-# fh = logging.FileHandler("{}_{}.log".format(NAME, PROCESS_START_TIME))
-# fh.setFormatter(formatter)
-
 logging.getLogger().setLevel(logging.INFO)
 logging.getLogger().addHandler(ch)
-# logging.getLogger().addHandler(fh)
-
 logger = logging.getLogger(__name__)
 
 
@@ -63,6 +54,7 @@ def main(args):
     # Load gold references
     with open(args.gold) as fin:
         golds = json.load(fin)
+    golds = extract_eval_answers(golds)
 
     evals = eval_dicts_uuid(golds, preds)
     logger.info("EM, F1, AvNA: {},{},{}".format(evals["EM"], evals["F1"], evals["AvNA"]))

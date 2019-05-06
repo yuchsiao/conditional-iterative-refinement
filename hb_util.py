@@ -7,13 +7,14 @@ import collections
 import ujson as json
 import logging
 import math
-# import os
+import os
 # import random
 # import sys
 from io import open
-
+import shutil
+import queue
 # import numpy as np
-# import torch
+import torch
 # from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
 #                               TensorDataset)
 # from torch.utils.data.distributed import DistributedSampler
@@ -23,6 +24,7 @@ from io import open
 # from pytorch_pretrained_bert.modeling import BertForQuestionAnswering, BertConfig, WEIGHTS_NAME, CONFIG_NAME
 # from pytorch_pretrained_bert.optimization import BertAdam, warmup_linear
 from pytorch_pretrained_bert.tokenization import BasicTokenizer, whitespace_tokenize
+from pytorch_pretrained_bert.modeling import WEIGHTS_NAME, CONFIG_NAME
 # ,
 #                                                   BertTokenizer,
 #                                                   whitespace_tokenize)
@@ -51,7 +53,8 @@ class SquadExample(object):
                  orig_answer_text=None,
                  start_position=None,
                  end_position=None,
-                 is_impossible=None):
+                 is_impossible=None,
+                 all_answers=None):
         self.qas_id = qas_id
         self.question_text = question_text
         self.doc_tokens = doc_tokens
@@ -59,6 +62,7 @@ class SquadExample(object):
         self.start_position = start_position
         self.end_position = end_position
         self.is_impossible = is_impossible
+        self.all_answers = all_answers
 
     def __str__(self):
         return self.__repr__()
@@ -93,7 +97,10 @@ class InputFeatures(object):
                  segment_ids,
                  start_position=None,
                  end_position=None,
-                 is_impossible=None):
+                 is_impossible=None,
+                 token_labels=None,
+                 index=None):
+        self.index = index
         self.unique_id = unique_id
         self.example_index = example_index
         self.doc_span_index = doc_span_index
@@ -106,9 +113,10 @@ class InputFeatures(object):
         self.start_position = start_position
         self.end_position = end_position
         self.is_impossible = is_impossible
+        self.token_labels = token_labels
 
 
-def read_squad_examples(input_file, is_training, version_2_with_negative):
+def read_squad_examples(input_file):
     """Read a SQuAD json file into a list of SquadExample."""
     with open(input_file, "r", encoding='utf-8') as reader:
         input_data = json.load(reader)["data"]
@@ -139,40 +147,57 @@ def read_squad_examples(input_file, is_training, version_2_with_negative):
             for qa in paragraph["qas"]:
                 qas_id = qa["id"]
                 question_text = qa["question"]
-                start_position = None
-                end_position = None
-                orig_answer_text = None
-                is_impossible = False
-                if is_training:
-                    if version_2_with_negative:
-                        is_impossible = qa["is_impossible"]
-                    if (len(qa["answers"]) != 1) and (not is_impossible):
-                        raise ValueError(
-                            "For training, each question should have exactly 1 answer.")
-                    if not is_impossible:
-                        answer = qa["answers"][0]
-                        orig_answer_text = answer["text"]
-                        answer_offset = answer["answer_start"]
-                        answer_length = len(orig_answer_text)
-                        start_position = char_to_word_offset[answer_offset]
-                        end_position = char_to_word_offset[answer_offset + answer_length - 1]
-                        # Only add answers where the text can be exactly recovered from the
-                        # document. If this CAN'T happen it's likely due to weird Unicode
-                        # stuff so we will just skip the example.
-                        #
-                        # Note that this means for training mode, every example is NOT
-                        # guaranteed to be preserved.
-                        actual_text = " ".join(doc_tokens[start_position:(end_position + 1)])
-                        cleaned_answer_text = " ".join(
-                            whitespace_tokenize(orig_answer_text))
-                        if actual_text.find(cleaned_answer_text) == -1:
-                            logger.warning("Could not find answer: '%s' vs. '%s'",
-                                           actual_text, cleaned_answer_text)
-                            continue
-                    else:
-                        start_position = -1
-                        end_position = -1
-                        orig_answer_text = ""
+                # start_position = None
+                # end_position = None
+                # orig_answer_text = None
+                # if len(qa["answers"]) > 0:
+                #     is_impossible = False
+                # if version_2_with_negative:
+                #     is_impossible = qa["is_impossible"]
+                # if (len(qa["answers"]) != 1) and (not is_impossible):
+                #     raise ValueError(
+                #         "For training, each question should have exactly 1 answer.")
+                if len(qa["answers"]) > 0:
+                    all_answers = [x["text"] for x in qa["answers"]]
+                    answer = qa["answers"][0]
+                    orig_answer_text = answer["text"]
+                    answer_offset = answer["answer_start"]
+                    answer_length = len(orig_answer_text)
+                    start_position = char_to_word_offset[answer_offset]
+                    end_position = char_to_word_offset[answer_offset + answer_length - 1]
+                    # Only add answers where the text can be exactly recovered from the
+                    # document. If this CAN'T happen it's likely due to weird Unicode
+                    # stuff so we will just skip the example.
+                    #
+                    # Note that this means for training mode, every example is NOT
+                    # guaranteed to be preserved.
+                    actual_text = " ".join(doc_tokens[start_position:(end_position + 1)])
+                    cleaned_answer_text = " ".join(
+                        whitespace_tokenize(orig_answer_text))
+                    if actual_text.find(cleaned_answer_text) == -1:
+                        logger.warning("Could not find answer: '%s' vs. '%s'",
+                                       actual_text, cleaned_answer_text)
+                        continue
+                    is_impossible = False
+                else:
+                    start_position = -1
+                    end_position = -1
+                    orig_answer_text = ""
+                    is_impossible = True
+                    all_answers = list()
+                # else:  # dev or test set
+                #     orig_answer_text = qa["answers"]
+                #     if orig_answer_text:  # has an answer
+                #         answer = qa["answers"][0]
+                #         answer_offset = answer["answer_start"]
+                #         answer_length = len(orig_answer_text)
+                #         start_position = char_to_word_offset[answer_offset]
+                #         end_position = char_to_word_offset[answer_offset + answer_length - 1]
+                #         is_impossible = False
+                #     else:
+                #         start_position = -1
+                #         end_position = -1
+                #         is_impossible = True
 
                 example = SquadExample(
                     qas_id=qas_id,
@@ -181,7 +206,9 @@ def read_squad_examples(input_file, is_training, version_2_with_negative):
                     orig_answer_text=orig_answer_text,
                     start_position=start_position,
                     end_position=end_position,
-                    is_impossible=is_impossible)
+                    is_impossible=is_impossible,
+                    all_answers=all_answers
+                )
                 examples.append(example)
     return examples
 
@@ -263,7 +290,7 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
         return cur_span_index == best_span_index
 
     unique_id = 1000000000
-
+    index = 0
     features = []
     for (example_index, example) in enumerate(examples):
         query_tokens = tokenizer.tokenize(example.question_text)
@@ -358,7 +385,8 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
 
             start_position = None
             end_position = None
-            if is_training and not example.is_impossible:
+            # if is_training and not example.is_impossible:
+            if not example.is_impossible:
                 # For training, if our document chunk does not contain an annotation
                 # we throw it out, since there is nothing to predict.
                 doc_start = doc_span.start
@@ -374,10 +402,11 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
                     doc_offset = len(query_tokens) + 2
                     start_position = tok_start_position - doc_start + doc_offset
                     end_position = tok_end_position - doc_start + doc_offset
-            if is_training and example.is_impossible:
+            # if is_training and example.is_impossible:
+            if example.is_impossible:
                 start_position = 0
                 end_position = 0
-            if example_index < 20:
+            if example_index < 2:
                 logger.info("*** Example ***")
                 logger.info("unique_id: %s" % (unique_id))
                 logger.info("example_index: %s" % (example_index))
@@ -415,19 +444,38 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
                     segment_ids=segment_ids,
                     start_position=start_position,
                     end_position=end_position,
-                    is_impossible=example.is_impossible))
+                    is_impossible=example.is_impossible,
+                    index=index))
             unique_id += 1
+            index += 1
 
     return features
 
 
 RawResult = collections.namedtuple("RawResult",
-                                   ["unique_id", "start_logits", "end_logits"])
+                                   ["unique_id", "start_logits", "end_logits", "tl_logits", "ha_logits"])
 
 
-def write_predictions(all_examples, all_features, all_results, n_best_size,
-                      max_answer_length, do_lower_case, output_prediction_file,
-                      output_nbest_file, output_null_log_odds_file, verbose_logging,
+def write_predictions(
+        all_predictions, all_nbest_json, scores_diff_json,
+        output_prediction_file, output_nbest_file, output_null_log_odds_file, version_2_with_negative=True):
+
+    """Write final predictions to the json file and log-odds of null if needed."""
+    # logger.info("Writing predictions to: %s" % (output_prediction_file))
+    # logger.info("Writing nbest to: %s" % (output_nbest_file))
+    with open(output_prediction_file, "w") as writer:
+        writer.write(json.dumps(all_predictions, indent=4) + "\n")
+
+    with open(output_nbest_file, "w") as writer:
+        writer.write(json.dumps(all_nbest_json, indent=4) + "\n")
+
+    if version_2_with_negative:
+        with open(output_null_log_odds_file, "w") as writer:
+            writer.write(json.dumps(scores_diff_json, indent=4) + "\n")
+
+
+def extract_predictions(all_examples, all_features, all_results, n_best_size,
+                      max_answer_length, do_lower_case, verbose_logging,
                       version_2_with_negative, null_score_diff_threshold):
 
     def _get_best_indexes(logits, n_best_size):
@@ -463,10 +511,6 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
             probs.append(score / total_sum)
         return probs
 
-    """Write final predictions to the json file and log-odds of null if needed."""
-    logger.info("Writing predictions to: %s" % (output_prediction_file))
-    logger.info("Writing nbest to: %s" % (output_nbest_file))
-
     example_index_to_features = collections.defaultdict(list)
     for feature in all_features:
         example_index_to_features[feature.example_index].append(feature)
@@ -474,6 +518,9 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
     unique_id_to_result = {}
     for result in all_results:
         unique_id_to_result[result.unique_id] = result
+    # print(sorted(list(unique_id_to_result.keys())))
+    # print(len(all_results))
+
 
     _PrelimPrediction = collections.namedtuple(  # pylint: disable=invalid-name
         "PrelimPrediction",
@@ -493,7 +540,12 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
         null_start_logit = 0  # the start logit at the slice with min null score
         null_end_logit = 0  # the end logit at the slice with min null score
         for (feature_index, feature) in enumerate(features):
+            # try:
             result = unique_id_to_result[feature.unique_id]
+            # except Exception as e:
+            #     logger.error(e)
+            #     logger.error(len(unique_id_to_result))
+            #     raise e
             start_indexes = _get_best_indexes(result.start_logits, n_best_size)
             end_indexes = _get_best_indexes(result.end_logits, n_best_size)
             # if we could have irrelevant answers, get the min score of irrelevant
@@ -640,15 +692,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                 all_predictions[example.qas_id] = best_non_null_entry.text
                 all_nbest_json[example.qas_id] = nbest_json
 
-    with open(output_prediction_file, "w") as writer:
-        writer.write(json.dumps(all_predictions, indent=4) + "\n")
-
-    with open(output_nbest_file, "w") as writer:
-        writer.write(json.dumps(all_nbest_json, indent=4) + "\n")
-
-    if version_2_with_negative:
-        with open(output_null_log_odds_file, "w") as writer:
-            writer.write(json.dumps(scores_diff_json, indent=4) + "\n")
+    return all_predictions, all_nbest_json, scores_diff_json
 
 
 def get_final_text(pred_text, orig_text, do_lower_case, verbose_logging=False):
@@ -747,50 +791,157 @@ def get_final_text(pred_text, orig_text, do_lower_case, verbose_logging=False):
     return output_text
 
 
-def evaluate(model, data_loader, device, eval_file, max_len, use_squad_v2=True):
-    nll_meter = util.AverageMeter()
+# def evaluate(model, data_loader, device, eval_file, max_len, use_squad_v2=True):
+#     nll_meter = util.AverageMeter()
+#
+#     model.eval()
+#     pred_dict = {}
+#     with open(eval_file, 'r') as fh:
+#         gold_dict = json_load(fh)
+#     with torch.no_grad(), \
+#             tqdm(total=len(data_loader.dataset)) as progress_bar:
+#         for cw_idxs, cc_idxs, qw_idxs, qc_idxs, y1, y2, ids in data_loader:
+#             # Setup for forward
+#             cw_idxs = cw_idxs.to(device)
+#             qw_idxs = qw_idxs.to(device)
+#             batch_size = cw_idxs.size(0)
+#
+#             # Forward
+#             log_p1, log_p2 = model(cw_idxs, qw_idxs)
+#             y1, y2 = y1.to(device), y2.to(device)
+#             loss = F.nll_loss(log_p1, y1) + F.nll_loss(log_p2, y2)
+#             nll_meter.update(loss.item(), batch_size)
+#
+#             # Get F1 and EM scores
+#             p1, p2 = log_p1.exp(), log_p2.exp()
+#             starts, ends = util.discretize(p1, p2, max_len, use_squad_v2)
+#
+#             # Log info
+#             progress_bar.update(batch_size)
+#             progress_bar.set_postfix(NLL=nll_meter.avg)
+#
+#             preds, _ = util.convert_tokens(gold_dict,
+#                                            ids.tolist(),
+#                                            starts.tolist(),
+#                                            ends.tolist(),
+#                                            use_squad_v2)
+#             pred_dict.update(preds)
+#
+#     model.train()
+#
+#     results = util.eval_dicts(gold_dict, pred_dict, use_squad_v2)
+#     results_list = [('NLL', nll_meter.avg),
+#                     ('F1', results['F1']),
+#                     ('EM', results['EM'])]
+#     if use_squad_v2:
+#         results_list.append(('AvNA', results['AvNA']))
+#     results = OrderedDict(results_list)
 
-    model.eval()
-    pred_dict = {}
-    with open(eval_file, 'r') as fh:
-        gold_dict = json_load(fh)
-    with torch.no_grad(), \
-            tqdm(total=len(data_loader.dataset)) as progress_bar:
-        for cw_idxs, cc_idxs, qw_idxs, qc_idxs, y1, y2, ids in data_loader:
-            # Setup for forward
-            cw_idxs = cw_idxs.to(device)
-            qw_idxs = qw_idxs.to(device)
-            batch_size = cw_idxs.size(0)
 
-            # Forward
-            log_p1, log_p2 = model(cw_idxs, qw_idxs)
-            y1, y2 = y1.to(device), y2.to(device)
-            loss = F.nll_loss(log_p1, y1) + F.nll_loss(log_p2, y2)
-            nll_meter.update(loss.item(), batch_size)
+class CheckpointSaver:
+    """MODIFIED FOR HB
+    Class to save and load model checkpoints.
 
-            # Get F1 and EM scores
-            p1, p2 = log_p1.exp(), log_p2.exp()
-            starts, ends = util.discretize(p1, p2, max_len, use_squad_v2)
+    Save the best checkpoints as measured by a metric value passed into the
+    `save` method. Overwrite checkpoints with better checkpoints once
+    `max_checkpoints` have been saved.
 
-            # Log info
-            progress_bar.update(batch_size)
-            progress_bar.set_postfix(NLL=nll_meter.avg)
+    Args:
+        save_dir (str): Directory to save checkpoints.
+        max_checkpoints (int): Maximum number of checkpoints to keep before
+            overwriting old ones.
+        metric_name (str): Name of metric used to determine best model.
+        maximize_metric (bool): If true, best checkpoint is that which maximizes
+            the metric value passed in via `save`. Otherwise, best checkpoint
+            minimizes the metric.
+        log (logging.Logger): Optional logger for printing information.
+    """
+    def __init__(self, save_dir, max_checkpoints, metric_name,
+                 maximize_metric=False, log=None):
+        super(CheckpointSaver, self).__init__()
 
-            preds, _ = util.convert_tokens(gold_dict,
-                                           ids.tolist(),
-                                           starts.tolist(),
-                                           ends.tolist(),
-                                           use_squad_v2)
-            pred_dict.update(preds)
+        self.save_dir = save_dir
+        self.max_checkpoints = max_checkpoints
+        self.metric_name = metric_name
+        self.maximize_metric = maximize_metric
+        self.best_val = None
+        self.ckpt_paths = queue.PriorityQueue()
+        self.log = log
+        self._print('Saver will {}imize {}...'
+                    .format('max' if maximize_metric else 'min', metric_name))
 
-    model.train()
+    def is_best(self, metric_val):
+        """Check whether `metric_val` is the best seen so far.
 
-    results = util.eval_dicts(gold_dict, pred_dict, use_squad_v2)
-    results_list = [('NLL', nll_meter.avg),
-                    ('F1', results['F1']),
-                    ('EM', results['EM'])]
-    if use_squad_v2:
-        results_list.append(('AvNA', results['AvNA']))
-    results = OrderedDict(results_list)
+        Args:
+            metric_val (float): Metric value to compare to prior checkpoints.
+        """
+        if metric_val is None:
+            # No metric reported
+            return False
 
+        if self.best_val is None:
+            # No checkpoint saved yet
+            return True
+
+        return ((self.maximize_metric and self.best_val < metric_val)
+                or (not self.maximize_metric and self.best_val > metric_val))
+
+    def _print(self, message):
+        """Print a message if logging is enabled."""
+        if self.log is not None:
+            self.log.info(message)
+
+    def save(self, step, model, metric_val, device):
+        """Save model parameters to disk.
+
+        Args:
+            step (int): Total number of examples seen during training so far.
+            model (torch.nn.DataParallel): Model to save.
+            metric_val (float): Determines whether checkpoint is best so far.
+            device (torch.device): Device where model resides.
+        """
+
+        model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model itself
+        ckpt_dict = {
+            'model_name': model.__class__.__name__,
+            'model_state': model_to_save.cpu().state_dict(),
+            'step': step
+        }
+        model.to(device)
+
+        # Save config file
+        output_config_file = os.path.join(self.save_dir, CONFIG_NAME)
+        with open(output_config_file, 'w') as f:
+            f.write(model_to_save.enc_bert.config.to_json_string())
+
+        checkpoint_path = os.path.join(self.save_dir,
+                                       'step_{}.pth.tar'.format(step))
+        torch.save(ckpt_dict, checkpoint_path)
+        self._print('Saved checkpoint: {}'.format(checkpoint_path))
+
+        if self.is_best(metric_val):
+            # Save the best model
+            self.best_val = metric_val
+            best_path = os.path.join(self.save_dir, 'best.pth.tar')
+            shutil.copy(checkpoint_path, best_path)
+            self._print('New best checkpoint at step {}...'.format(step))
+
+        # Add checkpoint path to priority queue (lowest priority removed first)
+        if self.maximize_metric:
+            priority_order = metric_val
+        else:
+            priority_order = -metric_val
+
+        self.ckpt_paths.put((priority_order, checkpoint_path))
+
+        # Remove a checkpoint if more than max_checkpoints have been saved
+        if self.ckpt_paths.qsize() > self.max_checkpoints:
+            _, worst_ckpt = self.ckpt_paths.get()
+            try:
+                os.remove(worst_ckpt)
+                # self._print('Removed checkpoint: {}'.format(worst_ckpt))
+            except OSError:
+                # Avoid crashing if checkpoint has been removed or protected
+                pass
 
