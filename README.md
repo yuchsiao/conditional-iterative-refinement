@@ -4,6 +4,11 @@ This work is summarized in the report [here](/doc/summary.pdf).
 The code base is based on Stanford cs224n default project [repo](https://github.com/abisee/cs224n-win18-squad)
 for the ease of data processing for [SQuAD 2.0](https://rajpurkar.github.io/SQuAD-explorer/).
 
+## DISCLAIMER
+
+This is a work in progress and it is nowhere in a status for shipping but merely for sharing for references.
+Many of legacy parts are included without being removed for compatibility for old experiments.
+Old experiment setups are found in the [exp](exp) folder.
 
 ## Requirements
 
