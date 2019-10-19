@@ -33,6 +33,9 @@ python hb_train.py
 Please also refer to the `exp` folder for hyperpamater choices.
 The predictions for dev and test sets are generated at the end of each epoch.
 
+## Experiment Results
+
+Please refer to the [spreadsheet](exp/expbook.xlsx).
 
 
 
