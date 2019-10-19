@@ -1,6 +1,6 @@
 # Conditional Iterative Refinement for Question Answering
 
-This work is summarized in the report [here](/doc/summary.pdf).
+This work is summarized in the report [here](/doc/report.pdf).
 The code base is based on Stanford cs224n default project [repo](https://github.com/abisee/cs224n-win18-squad)
 for the ease of data processing for [SQuAD 2.0](https://rajpurkar.github.io/SQuAD-explorer/).
 
