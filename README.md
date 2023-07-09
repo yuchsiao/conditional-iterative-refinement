@@ -12,22 +12,25 @@ Old experiment setups are found in the [exp](exp) folder.
 
 ## Requirements
 
-* Create a conda environment using `environment.yml`
+Create a conda environment using `environment.yml` and activate it.
 
-    ```sh
-    conda env create -f environment.yml
-    ```
-
-* Run `setup.py` to download the dataset, GloVe embedding file, and SpaCy model files.
-
-    ```sh
-    python setup.py
-    ```
+```sh
+conda env create -f environment.yml
+conda activate cir
+```
 
 ## Model Training and Evaluation
 
+Run the data preprocessing first:
+
 ```sh
-python hb_train.py --output_dir <FOLDER>
+python setup.py
+```
+
+Train the model:
+
+```sh
+python hb_train.py --output_dir <OUTPUT_DIR>
 ```
 
 Please also refer to the `exp` folder for hyperpamater choices.
