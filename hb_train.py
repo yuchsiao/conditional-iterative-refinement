@@ -10,30 +10,23 @@ import os
 import pickle
 import random
 import sys
-from typing import List
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from sklearn.metrics import roc_auc_score
 import torch
-from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
+from torch import nn
+from torch.utils.data import (DataLoader, Dataset, RandomSampler, SequentialSampler,
                               TensorDataset)
-from torch.utils.data.distributed import DistributedSampler
-from torch.nn import CrossEntropyLoss
 from tqdm import tqdm, trange
 
 from pytorch_pretrained_bert.optimization import BertAdam
 from pytorch_pretrained_bert.tokenization import BertTokenizer
-import util
-from hb_util import \
-    read_squad_examples,\
-    convert_examples_to_features,\
-    RawResult,\
-    extract_predictions,\
-    write_predictions,\
-    CheckpointSaver,\
-    InputFeatures
+from hb_util import (CheckpointSaver, convert_examples_to_features, extract_predictions,
+                     InputFeatures, RawResult, read_squad_examples, SquadExample, write_predictions)
 from hb_metric import extract_eval_answers, eval_dicts_uuid
 from hb_model import BertQAL3
+import util
 
 
 def str2bool(v):
@@ -46,7 +39,7 @@ def str2bool(v):
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
 
     ## Required parameters
@@ -229,12 +222,24 @@ def generate_impossible_labels(features: List[InputFeatures]) -> None:
                 f.start_position, f.end_position))
 
 
-def load_examples_to_features(file, tokenizer, args, name=None):
+def load_examples_to_features(
+        file: str, tokenizer, args: argparse.Namespace, name: str = None) -> Tuple[torch.Tensor]:
+    """Converts SquadExamples to features.
+    
+    Args:
+        file: data filename.
+        tokenizer: Tokenizer.
+        args: parsed argparse args.
+        name: name for logging.
+
+    Returns:
+        tuple of feature tensors.
+    """
     train_examples = read_squad_examples(input_file=file)
 
     cached_train_features_file = file + '_{0}_{1}_{2}_{3}'.format(
-        list(filter(None, args.bert_model.split('/'))).pop(), str(args.max_seq_length), str(args.doc_stride),
-        str(args.max_query_length))
+        list(filter(None, args.bert_model.split('/'))).pop(), str(args.max_seq_length),
+        str(args.doc_stride), str(args.max_query_length))
     train_features = None
     try:
         # use cache
@@ -271,7 +276,6 @@ def load_examples_to_features(file, tokenizer, args, name=None):
     token_labels = torch.tensor([f.token_labels for f in train_features], dtype=torch.long)
     has_answers = torch.tensor([not f.is_impossible for f in train_features], dtype=torch.long)
 
-    # print([f.start_position for f in train_features])
     all_start_positions = \
         torch.tensor([f.start_position for f in train_features], dtype=torch.long)
     all_end_positions = \
@@ -281,8 +285,11 @@ def load_examples_to_features(file, tokenizer, args, name=None):
            token_labels, has_answers
 
 
-def predict_dataset(model, dataset_name, examples, features, dataset, global_step, device, n_gpu,
-                    all_prerun=None, golds=None, num_losses=4, num_iters=1):
+def predict_dataset(
+        model: nn.Module, dataset_name: str, examples: List[SquadExample],
+        features: List[InputFeatures], dataset: Dataset, global_step: int, device: str, n_gpu: int,
+        all_prerun=None, golds=None, num_iters=1) -> Optional[List[Dict[str, float]]]:
+    """Run inference using model over """
     sampler = SequentialSampler(dataset)
     dataloader = DataLoader(dataset, sampler=sampler, batch_size=args.train_batch_size * args.gradient_accumulation_steps)
     nll_meter = util.AverageMeter()
@@ -308,14 +315,15 @@ def predict_dataset(model, dataset_name, examples, features, dataset, global_ste
     res = [list() for _ in range(num_iters)]
     for batch in tqdm(dataloader, desc='Iteration'):
         batch = tuple(t.to(device) for t in batch)  # multi-gpu does scattering it-self
-        row_index, input_ids, input_mask, segment_ids, example_indices, \
-            start_positions, end_positions, tls, has_ans = batch
+        (row_index, input_ids, input_mask, segment_ids, example_indices, start_positions, 
+         end_positions, tls, has_ans) = batch
 
         if args.finetune:
             with torch.no_grad():
                 try:
-                    outputs, total_loss = model(input_ids, segment_ids, input_mask, start_positions, end_positions, tls,
-                                                has_ans, num_iters=num_iters)
+                    outputs, total_loss = model(
+                        input_ids, segment_ids, input_mask, start_positions, end_positions, tls,
+                        has_ans, num_iters=num_iters)
                 except TypeError:
                     logger.warning('Pred input_ids errors. Skip it')
                     continue
@@ -347,7 +355,7 @@ def predict_dataset(model, dataset_name, examples, features, dataset, global_ste
 
 
     def eval_tls(features, res):
-        assert len(features) == len(res), 'not the same lengths {} vs {}'.format(len(features), len(res))
+        assert len(features) == len(res), f'not the same lengths {len(features)} vs {len(res)}'
         tls = np.array([f.token_labels for f in features], dtype=np.float32)
         masks = np.array([f.segment_ids for f in features], dtype=np.float32)
         aucs = 0
@@ -362,7 +370,7 @@ def predict_dataset(model, dataset_name, examples, features, dataset, global_ste
         return avg_auc * 100
 
     def eval_has(features, res):
-        assert len(features) == len(res), 'not the same lengths {} vs {}'.format(len(features), len(res))
+        assert len(features) == len(res), f'not the same lengths {len(features)} vs {len(res)}'
         has = np.array([not f.is_impossible for f in features], dtype=np.float32)
         preds = np.array([x.ha_logits for x in res])
         auc = roc_auc_score(has, preds)
@@ -381,9 +389,12 @@ def predict_dataset(model, dataset_name, examples, features, dataset, global_ste
             all_evals[iter]['ha_auc'] = eval_has(features, r)
 
     for i in range(num_iters):
-        output_prediction_file = os.path.join(args.output_dir, '{}_predictions_{}_iter{}.json'.format(dataset_name, global_step, i+1))
-        output_nbest_file = os.path.join(args.output_dir, '{}_nbest_predictions_{}_iter{}.json'.format(dataset_name, global_step, i+1))
-        output_null_log_odds_file = os.path.join(args.output_dir, '{}_null_odds_{}_iter{}.json'.format(dataset_name, global_step, i+1))
+        output_prediction_file = os.path.join(
+            args.output_dir, f'{dataset_name}_predictions_{global_step}_iter{i + 1}.json')
+        output_nbest_file = os.path.join(
+            args.output_dir, f'{dataset_name}_nbest_predictions_{global_step}_iter{i + 1}.json')
+        output_null_log_odds_file = os.path.join(
+            args.output_dir, f'{dataset_name}_null_odds_{global_step}_iter{i + 1}.json')
         write_predictions(
             all_preds[i], all_nbest[i], all_scores_diff[i],
             output_prediction_file, output_nbest_file, output_null_log_odds_file)
@@ -392,14 +403,15 @@ def predict_dataset(model, dataset_name, examples, features, dataset, global_ste
 
 
 def main():
-    logger.info('{}'.format(json.dumps(vars(args), indent=4)))
+    logger.info(json.dumps(vars(args), indent=4))
     device = torch.device('cuda' if torch.cuda.is_available() and not args.no_cuda else 'cpu')
     n_gpu = torch.cuda.device_count()
-    logger.info('device: {} n_gpu: {}'.format(device, n_gpu))
+    logger.info('device: %s n_gpu: %d' % (device, n_gpu))
 
     if args.gradient_accumulation_steps < 1:
-        raise ValueError('Invalid gradient_accumulation_steps parameter: {}, should be >= 1'.format(
-                            args.gradient_accumulation_steps))
+        raise ValueError(
+            f'Invalid gradient_accumulation_steps parameter: {args.gradient_accumulation_steps}, '
+            'should be >= 1')
 
     args.train_batch_size = args.train_batch_size // args.gradient_accumulation_steps
 
@@ -493,7 +505,8 @@ def main():
     test_all_prerun = None
     if not args.finetune:
         # TODO: Support prerun for the train split.
-        logger.error('This training script currently only supports fine-tuning from a pretrained model.')
+        logger.error(
+            'This training script currently only supports fine-tuning from a pretrained model.')
         sys.exit(1)
 
     # Training
@@ -508,15 +521,13 @@ def main():
                             maximize_metric=args.maximize_metric,
                             log=logger)
     model.train()
-    # seq_len = args.max_seq_length
     last_num_iters_wo_randomness = 0
     for ei in trange(int(args.num_train_epochs), desc='Epoch'):
-        # num_iters = min(args.cir_num_iters, round(1 + ei * args.train_num_iters_increase_every_epoch))
-        # logger.info('### Epoch={}, num_iters={}'.format(ei+1, num_iters))
         logger.info('### Epoch={}'.format(ei+1))
 
         for step, batch in enumerate(tqdm(train_dataloader, desc='Iteration')):
-            num_iters = min(args.cir_num_iters, (global_step // args.train_num_iters_inc_every_global_step) + 1)
+            num_iters = min(
+                args.cir_num_iters, (global_step // args.train_num_iters_inc_every_global_step) + 1)
             if num_iters > last_num_iters_wo_randomness:
                 logger.info('##### num_iters increased to {} @ {}'.format(num_iters, global_step))
                 last_num_iters_wo_randomness = num_iters
@@ -534,7 +545,8 @@ def main():
             # Forward
             if args.finetune:
                 try:
-                    __output_logits, loss = model(input_ids, segment_ids, input_mask, start_positions, end_positions, tls, has_ans, num_iters=num_iters)
+                    _, loss = model(input_ids, segment_ids, input_mask, start_positions,
+                                    end_positions, tls, has_ans, num_iters=num_iters)
                 except TypeError as e:
                     logger.warning('Train input_ids errors. Skip it')
                     continue
@@ -542,7 +554,6 @@ def main():
                 loss = loss.mean()  # mean() to average on multi-gpu.
             if args.gradient_accumulation_steps > 1:
                 loss = loss / args.gradient_accumulation_steps
-                # logger.info('loss: {}'.format(loss))
             train_nll_meter.update(loss.item(), args.train_batch_size)
 
             loss.backward()
@@ -558,8 +569,7 @@ def main():
                 # Evaluate on dev set
                 all_evals = predict_dataset(
                     model, 'dev', dev_examples, dev_features, dev_data, global_step, device, n_gpu,
-                    all_prerun=dev_all_prerun, golds=golds, num_losses=args.cir_num_losses,
-                    num_iters=args.cir_num_iters)
+                    all_prerun=dev_all_prerun, golds=golds, num_iters=args.cir_num_iters)
 
                 for i, evals in enumerate(all_evals, start=1):
                     evals['TrNLL'] = train_nll_meter.avg
@@ -576,8 +586,7 @@ def main():
                     logger.info('Best so far. Predicting test set...')
                     predict_dataset(
                         model, 'test', test_examples, test_features, test_data, global_step, device, n_gpu,
-                        all_prerun=test_all_prerun, golds=None, num_losses=args.cir_num_losses,
-                        num_iters=args.cir_num_iters)
+                        all_prerun=test_all_prerun, golds=None, num_iters=args.cir_num_iters)
 
                 # Save model
                 saver.save(global_step, model, all_evals[-1][args.metric_name], device)

@@ -490,12 +490,7 @@ def extract_predictions(all_examples, all_features, all_results, n_best_size,
         null_start_logit = 0  # the start logit at the slice with min null score
         null_end_logit = 0  # the end logit at the slice with min null score
         for (feature_index, feature) in enumerate(features):
-            # try:
             result = unique_id_to_result[feature.unique_id]
-            # except Exception as e:
-            #     logger.error(e)
-            #     logger.error(len(unique_id_to_result))
-            #     raise e
             start_indexes = _get_best_indexes(result.start_logits, n_best_size)
             end_indexes = _get_best_indexes(result.end_logits, n_best_size)
             # if we could have irrelevant answers, get the min score of irrelevant
@@ -772,11 +767,11 @@ class CheckpointSaver:
         self._print('Saver will {}imize {}...'
                     .format('max' if maximize_metric else 'min', metric_name))
 
-    def is_best(self, metric_val):
-        """Check whether `metric_val` is the best seen so far.
+    def is_best(self, metric_val: float) -> bool:
+        """Checks whether `metric_val` is the best seen so far.
 
         Args:
-            metric_val (float): Metric value to compare to prior checkpoints.
+            metric_val: Metric value to compare to prior checkpoints.
         """
         if metric_val is None:
             # No metric reported
@@ -790,12 +785,12 @@ class CheckpointSaver:
                 or (not self.maximize_metric and self.best_val > metric_val))
 
     def _print(self, message):
-        """Print a message if logging is enabled."""
+        """Prints a message if logging is enabled."""
         if self.log is not None:
             self.log.info(message)
 
     def save(self, step, model, metric_val, device):
-        """Save model parameters to disk.
+        """Saves model parameters to disk.
 
         Args:
             step (int): Total number of examples seen during training so far.
