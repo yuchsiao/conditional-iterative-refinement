@@ -1,12 +1,16 @@
+"""Collections of metric functions for SQuAD dataset."""
+
 from collections import Counter
 import logging
 import re
 import string
+from typing import Dict
 
 logger = logging.getLogger(__name__)
 
 
-def metric_max_over_ground_truths(metric_fn, prediction, ground_truths):
+def metric_max_over_ground_truths(metric_fn, prediction, ground_truths) -> float:
+    """Computes max scores across all ground_truths compared with prediction, by metric_fn."""
     if not ground_truths:
         return metric_fn(prediction, '')
     scores_for_ground_truths = []
@@ -16,7 +20,8 @@ def metric_max_over_ground_truths(metric_fn, prediction, ground_truths):
     return max(scores_for_ground_truths)
 
 
-def eval_dicts(gold_dict, pred_dict, no_answer=True):
+def eval_dicts(gold_dict, pred_dict, no_answer=True) -> Dict[str, float]:
+    """Evaluates pred_dict against gold_dict."""
     avna = f1 = em = total = 0
     for key, value in pred_dict.items():
         total += 1
@@ -37,10 +42,13 @@ def eval_dicts(gold_dict, pred_dict, no_answer=True):
 
 
 def extract_eval_answers(gold_dict):
-    """
-    Extract eval answers from eval.json
-    :param gold_dict: eval.json file from project template
-    :return: dict from uuid to list of answers
+    """Extracts eval answers from eval.json.
+
+    Args:
+        gold_dict: eval.json file from project template
+
+    Returns:
+        dict from uuid to list of answers
     """
     ans = {}
     n = len(gold_dict)
@@ -49,13 +57,16 @@ def extract_eval_answers(gold_dict):
     return ans
 
 
-def eval_dicts_uuid(gold_dict: dict, pred_dict: dict, no_answer: bool=True) -> dict:
-    """
-    Evaluate
-    :param gold_dict: eval.json file from project template
-    :param pred_dict: key-value pairs for each uuid (maybe missing)
-    :param no_answer: bool for squad v2 no answer cases
-    :return: dict of performance numbers
+def eval_dicts_uuid(gold_dict: dict, pred_dict: dict, no_answer: bool=True) -> Dict[str, float]:
+    """Evaluates SQuAD dataset.
+
+    Args:
+        gold_dict: eval.json file from project template
+        pred_dict: key-value pairs for each uuid (maybe missing)
+        no_answer: bool for squad v2 no answer cases
+
+    Returns:
+        dict of performance numbers
     """
 
     avna = f1 = em = total = 0
@@ -77,8 +88,8 @@ def eval_dicts_uuid(gold_dict: dict, pred_dict: dict, no_answer: bool=True) -> d
     return eval_dict
 
 
-def compute_avna(prediction, ground_truths):
-    """Compute answer vs. no-answer accuracy."""
+def compute_avna(prediction, ground_truths) -> float:
+    """Computes answer vs. no-answer accuracy."""
     return float(bool(prediction) == bool(ground_truths))
 
 

@@ -1,48 +1,26 @@
-"""Huggingface BERT"""
+"""Adapted from an old version of Huggingface BERT."""
 
 from __future__ import absolute_import, division, print_function
 
-# import argparse
 import collections
 import ujson as json
 import logging
 import math
 import os
-# import random
-# import sys
-from io import open
-import shutil
 import queue
-# import numpy as np
+import shutil
 import torch
-# from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
-#                               TensorDataset)
-# from torch.utils.data.distributed import DistributedSampler
-# from tqdm import tqdm, trange
-#
-# from pytorch_pretrained_bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
-# from pytorch_pretrained_bert.modeling import BertForQuestionAnswering, BertConfig, WEIGHTS_NAME, CONFIG_NAME
-# from pytorch_pretrained_bert.optimization import BertAdam, warmup_linear
-from pytorch_pretrained_bert.tokenization import BasicTokenizer, whitespace_tokenize
-from pytorch_pretrained_bert.modeling import WEIGHTS_NAME, CONFIG_NAME
-# ,
-#                                                   BertTokenizer,
-#                                                   whitespace_tokenize)
-#
-# if sys.version_info[0] == 2:
-#     import cPickle as pickle
-# else:
-#     import pickle
+from typing import List
 
-# logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-#                     datefmt='%m/%d/%Y %H:%M:%S',
-#                     level=logging.INFO)
+from pytorch_pretrained_bert.modeling import WEIGHTS_NAME, CONFIG_NAME
+from pytorch_pretrained_bert.tokenization import BasicTokenizer, whitespace_tokenize
+
 logger = logging.getLogger(__name__)
 
 
-class SquadExample(object):
-    """
-    A single training/test example for the Squad dataset.
+class SquadExample:
+    """A single training/test example for the Squad dataset.
+    
     For examples without an answer, the start and end position are -1.
     """
 
@@ -82,7 +60,7 @@ class SquadExample(object):
         return s
 
 
-class InputFeatures(object):
+class InputFeatures:
     """A single set of features of data."""
 
     def __init__(self,
@@ -116,8 +94,8 @@ class InputFeatures(object):
         self.token_labels = token_labels
 
 
-def read_squad_examples(input_file):
-    """Read a SQuAD json file into a list of SquadExample."""
+def read_squad_examples(input_file: str) -> List[SquadExample]:
+    """Reads a SQuAD json file into a list of SquadExample."""
     with open(input_file, "r", encoding='utf-8') as reader:
         input_data = json.load(reader)["data"]
 
@@ -147,16 +125,6 @@ def read_squad_examples(input_file):
             for qa in paragraph["qas"]:
                 qas_id = qa["id"]
                 question_text = qa["question"]
-                # start_position = None
-                # end_position = None
-                # orig_answer_text = None
-                # if len(qa["answers"]) > 0:
-                #     is_impossible = False
-                # if version_2_with_negative:
-                #     is_impossible = qa["is_impossible"]
-                # if (len(qa["answers"]) != 1) and (not is_impossible):
-                #     raise ValueError(
-                #         "For training, each question should have exactly 1 answer.")
                 if len(qa["answers"]) > 0:
                     all_answers = [x["text"] for x in qa["answers"]]
                     answer = qa["answers"][0]
@@ -185,19 +153,6 @@ def read_squad_examples(input_file):
                     orig_answer_text = ""
                     is_impossible = True
                     all_answers = list()
-                # else:  # dev or test set
-                #     orig_answer_text = qa["answers"]
-                #     if orig_answer_text:  # has an answer
-                #         answer = qa["answers"][0]
-                #         answer_offset = answer["answer_start"]
-                #         answer_length = len(orig_answer_text)
-                #         start_position = char_to_word_offset[answer_offset]
-                #         end_position = char_to_word_offset[answer_offset + answer_length - 1]
-                #         is_impossible = False
-                #     else:
-                #         start_position = -1
-                #         end_position = -1
-                #         is_impossible = True
 
                 example = SquadExample(
                     qas_id=qas_id,
@@ -461,8 +416,6 @@ def write_predictions(
         output_prediction_file, output_nbest_file, output_null_log_odds_file, version_2_with_negative=True):
 
     """Write final predictions to the json file and log-odds of null if needed."""
-    # logger.info("Writing predictions to: %s" % (output_prediction_file))
-    # logger.info("Writing nbest to: %s" % (output_nbest_file))
     with open(output_prediction_file, "w") as writer:
         writer.write(json.dumps(all_predictions, indent=4) + "\n")
 
@@ -518,9 +471,6 @@ def extract_predictions(all_examples, all_features, all_results, n_best_size,
     unique_id_to_result = {}
     for result in all_results:
         unique_id_to_result[result.unique_id] = result
-    # print(sorted(list(unique_id_to_result.keys())))
-    # print(len(all_results))
-
 
     _PrelimPrediction = collections.namedtuple(  # pylint: disable=invalid-name
         "PrelimPrediction",
@@ -791,56 +741,8 @@ def get_final_text(pred_text, orig_text, do_lower_case, verbose_logging=False):
     return output_text
 
 
-# def evaluate(model, data_loader, device, eval_file, max_len, use_squad_v2=True):
-#     nll_meter = util.AverageMeter()
-#
-#     model.eval()
-#     pred_dict = {}
-#     with open(eval_file, 'r') as fh:
-#         gold_dict = json_load(fh)
-#     with torch.no_grad(), \
-#             tqdm(total=len(data_loader.dataset)) as progress_bar:
-#         for cw_idxs, cc_idxs, qw_idxs, qc_idxs, y1, y2, ids in data_loader:
-#             # Setup for forward
-#             cw_idxs = cw_idxs.to(device)
-#             qw_idxs = qw_idxs.to(device)
-#             batch_size = cw_idxs.size(0)
-#
-#             # Forward
-#             log_p1, log_p2 = model(cw_idxs, qw_idxs)
-#             y1, y2 = y1.to(device), y2.to(device)
-#             loss = F.nll_loss(log_p1, y1) + F.nll_loss(log_p2, y2)
-#             nll_meter.update(loss.item(), batch_size)
-#
-#             # Get F1 and EM scores
-#             p1, p2 = log_p1.exp(), log_p2.exp()
-#             starts, ends = util.discretize(p1, p2, max_len, use_squad_v2)
-#
-#             # Log info
-#             progress_bar.update(batch_size)
-#             progress_bar.set_postfix(NLL=nll_meter.avg)
-#
-#             preds, _ = util.convert_tokens(gold_dict,
-#                                            ids.tolist(),
-#                                            starts.tolist(),
-#                                            ends.tolist(),
-#                                            use_squad_v2)
-#             pred_dict.update(preds)
-#
-#     model.train()
-#
-#     results = util.eval_dicts(gold_dict, pred_dict, use_squad_v2)
-#     results_list = [('NLL', nll_meter.avg),
-#                     ('F1', results['F1']),
-#                     ('EM', results['EM'])]
-#     if use_squad_v2:
-#         results_list.append(('AvNA', results['AvNA']))
-#     results = OrderedDict(results_list)
-
-
 class CheckpointSaver:
-    """MODIFIED FOR HB
-    Class to save and load model checkpoints.
+    """MODIFIED FROM HB. Class to save and load model checkpoints.
 
     Save the best checkpoints as measured by a metric value passed into the
     `save` method. Overwrite checkpoints with better checkpoints once

@@ -1,7 +1,9 @@
+"""Evaluates SQuAD dataset predictions against gold references."""
+
 import argparse
+import json
 import logging
 import os
-import json
 
 from hb_metric import eval_dicts_uuid, extract_eval_answers
 
@@ -33,7 +35,6 @@ logger = logging.getLogger(__name__)
 
 
 def main(args):
-
     # Load predictions
     if args.mode == "hb":
         with open(args.pred) as fin:

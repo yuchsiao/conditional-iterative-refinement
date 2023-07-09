@@ -1,8 +1,8 @@
 # Conditional Iterative Refinement for Question Answering
 
 This work is summarized in the report [here](/doc/report.pdf).
-The code base is based on Stanford cs224n default project [repo](https://github.com/abisee/cs224n-win18-squad)
-for the ease of data processing for [SQuAD 2.0](https://rajpurkar.github.io/SQuAD-explorer/).
+The code for processing [SQuAD 2.0](https://rajpurkar.github.io/SQuAD-explorer/) is taken from this
+[repo](https://github.com/chrischute/squad).
 
 ## DISCLAIMER
 
@@ -27,7 +27,7 @@ Old experiment setups are found in the [exp](exp) folder.
 ## Model Training and Evaluation
 
 ```sh
-python hb_train.py
+python hb_train.py --output_dir <FOLDER>
 ```
 
 Please also refer to the `exp` folder for hyperpamater choices.

@@ -1,3 +1,5 @@
+"""Modified BERT model with conditional output layer run iteratively. See doc/report.pdf for details."""
+
 from __future__ import absolute_import, division, print_function, unicode_literals
 
 import copy
@@ -11,8 +13,8 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 
 from pytorch_pretrained_bert.modeling import \
-    BertModel, BertConfig, \
-    BertIntermediate, BertOutput, BertLayerNorm
+    BertModel, BertConfig, BertSelfAttention, \
+    BertIntermediate, BertOutput, BertLayerNorm, BertLayer, BertEncoder
 from pytorch_pretrained_bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
 
 
@@ -20,9 +22,10 @@ logger = logging.getLogger(__name__)
 
 
 class OutputLayerL3(nn.Module):
+    """Output layer with three types of losses: original SQuAD loss, token-level loss, and has-answer loss."""
+
     def __init__(self, use_tl, use_ha, hidden_size, num_attention_heads=8, aux_loss_weight=0.1, dropout_prob=0.1):
         super().__init__()
-        # self.seq_output_size = seq_output_size
         self.hidden_size = hidden_size
         self.aux_loss_weight = aux_loss_weight
         self.num_attention_heads = num_attention_heads
@@ -125,78 +128,38 @@ class OutputLayerL3(nn.Module):
                 ha_bcel = nn.BCEWithLogitsLoss(reduction='mean')
                 ha_loss = ha_bcel(ha_logits, has_answers.to(torch.float32))
 
-            # Sum of loss
-            # total_loss = [start_loss, end_loss, tl_losses, ha_loss]
+            # Sum of loss: original SQuAD loss and losses from aux tasks
             total_loss = (start_loss + end_loss) * 0.5 + self.aux_loss_weight * (tl_loss + ha_loss)
-            # total_loss = (start_loss + end_loss) * 0.5 + self.aux_loss_weight * ha_loss
-            # total_loss = (start_loss + end_loss) * 0.5  # + self.aux_loss_weight * ha_loss
 
         return start_logits, end_logits, tl_logits, ha_logits, total_loss
-        # return start_logits, end_logits, total_loss
-        # return (start_logits, end_logits, tl_logits, ha_logits), total_loss
 
 
-class ModifiedBertSelfAttention(nn.Module):
+class ModifiedBertSelfAttention(BertSelfAttention):
+    """Same as BertSelfAttention but using input_config.hidden_size for query, key, value."""
     def __init__(self, input_config, config):
-        super().__init__()
-        if config.hidden_size % config.num_attention_heads != 0:
-            raise ValueError(
-                "The hidden size (%d) is not a multiple of the number of attention "
-                "heads (%d)" % (config.hidden_size, config.num_attention_heads))
-        self.num_attention_heads = config.num_attention_heads
-        self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
-        self.all_head_size = self.num_attention_heads * self.attention_head_size
+        super().__init__(config)
 
         self.query = nn.Linear(input_config.hidden_size, self.all_head_size)
         self.key = nn.Linear(input_config.hidden_size, self.all_head_size)
         self.value = nn.Linear(input_config.hidden_size, self.all_head_size)
 
-        self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
-
-    def transpose_for_scores(self, x):
-        new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
-        x = x.view(*new_x_shape)
-        return x.permute(0, 2, 1, 3)
-
-    def forward(self, hidden_states, attention_mask):
-        mixed_query_layer = self.query(hidden_states)
-        mixed_key_layer = self.key(hidden_states)
-        mixed_value_layer = self.value(hidden_states)
-
-        query_layer = self.transpose_for_scores(mixed_query_layer)
-        key_layer = self.transpose_for_scores(mixed_key_layer)
-        value_layer = self.transpose_for_scores(mixed_value_layer)
-
-        # Take the dot product between "query" and "key" to get the raw attention scores.
-        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
-        attention_scores = attention_scores / math.sqrt(self.attention_head_size)
-        # Apply the attention mask is (precomputed for all layers in BertModel forward() function)
-        attention_scores = attention_scores + attention_mask
-
-        # Normalize the attention scores to probabilities.
-        attention_probs = nn.Softmax(dim=-1)(attention_scores)
-
-        # This is actually dropping out entire tokens to attend to, which might
-        # seem a bit unusual, but is taken from the original Transformer paper.
-        attention_probs = self.dropout(attention_probs)
-
-        context_layer = torch.matmul(attention_probs, value_layer)
-        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
-        new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
-        context_layer = context_layer.view(*new_context_layer_shape)
-        return context_layer
-
 
 class ModifiedBertLayer(nn.Module):
+    """Same as BertLayer but using ModifiedBertSelfAttention as the attention module."""
+
     def __init__(self, input_config, config):
         super().__init__()
+        # MODIFIED: To incorporate the augmented input dims.
         self.attention = ModifiedBertSelfAttention(input_config, config)
+        # MODIFIED_END
         self.intermediate = BertIntermediate(config)
         self.output = BertOutput(config)
 
     def forward(self, hidden_states, attention_mask):
+        # MODIFIED: Extend attention mask to accommodate extra dims for conditional inputs.
         extended_attention_mask = attention_mask.to(torch.float32).unsqueeze(1).unsqueeze(2)
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
+        # MODIFIED_END
         attention_output = self.attention(hidden_states, extended_attention_mask)
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.output(intermediate_output, attention_output)
@@ -204,7 +167,15 @@ class ModifiedBertLayer(nn.Module):
 
 
 class ModifiedBertEncoder(nn.Module):
-    def __init__(self, input_config, config):
+    """BertEncoder with conditional inputs."""
+
+    def __init__(self, input_config: BertConfig, config: BertConfig):
+        """Constructor.
+        
+        Args:
+            input_config: config with hidden size augmented due to conditional inputs.
+            config: Original configuration for Bert.
+        """
         super().__init__()
         layers = [ModifiedBertLayer(input_config, config)]  # First layer: with conditions as input
         # TODO: Currently, num_hidden_layers >= 2 does not work. Need to know why
@@ -226,19 +197,39 @@ class ModifiedBertEncoder(nn.Module):
 
 
 class ConditionalLayer(nn.Module):
+    """Conditional layer: Bert encoder with augmented inputs and outputs with aux losses."""
+
     def __init__(self,
-                 num_losses=4,
-                 hidden_size=320,
-                 num_hidden_layers=1,
-                 num_attention_heads=4,
-                 intermediate_size=1500,
-                 hidden_dropout_prob=0.1,
-                 attention_probs_dropout_prob=0.1,
-                 out_aux_loss_weight=0.1,
-                 out_dropout_prob=0.2,
-                 out_num_attention_heads=6,
-                 use_tl=True,
-                 use_ha=True):
+                 num_losses: int = 4,
+                 hidden_size: int = 320,
+                 num_hidden_layers: int = 1,
+                 num_attention_heads: int =4 ,
+                 intermediate_size: int = 1500,
+                 hidden_dropout_prob: float = 0.1,
+                 attention_probs_dropout_prob: float = 0.1,
+                 out_aux_loss_weight: float = 0.1,
+                 out_dropout_prob: float = 0.2,
+                 out_num_attention_heads: int = 6,
+                 use_tl: bool = True,
+                 use_ha: bool = True):
+        """Constructor.
+        
+        Args:
+            num_losses: number of loss functions. Note that start_idx and end_idx predictions count as 2.
+            hidden_size: hidden size for attention.
+            num_hidden_layers: number of encoder layer.
+            num_attention_heads: number of attention heads.
+            intermediate_size: feed-forward size.
+            hidden_dropout_prob: The dropout probabilitiy for all fully connected
+                layers in the embeddings, encoder, and pooler.
+            attention_probs_dropout_prob: The dropout ratio for the attention probabilities.
+            out_aux_loss_weight: Relative loss weight for aux tasks with respect to the standard
+                start_idx and end_idx prediction losses.
+            out_dropout_prob: Dropout rate for output layer.
+            out_num_attention_heads: Number attention heads for output layer.
+            use_tl: Whether to use token-level loss or not.
+            use_ha: Whether to use has-answer loss or not.
+        """
         super().__init__()
         self.config = BertConfig(
             0,
@@ -248,9 +239,6 @@ class ConditionalLayer(nn.Module):
             intermediate_size=intermediate_size,
             hidden_dropout_prob=hidden_dropout_prob,
             attention_probs_dropout_prob=attention_probs_dropout_prob,
-            # max_position_embeddings=max_position_embeddings,
-            # type_vocab_size=type_vocab_size,
-            # initializer_range=initializer_range
         )
         self.input_config = copy.deepcopy(self.config)
         self.input_config.hidden_size += num_losses
@@ -280,33 +268,47 @@ class ConditionalLayer(nn.Module):
 
         conditions = torch.cat((start_logits, end_logits, tl_logits, ha_logits), dim=-1)
 
-        # Only use start and end logits as conditions. Seemingly old version
-        # start_logits, end_logits, loss = outputs
-        # start_logits = start_logits.unsqueeze(-1)
-        # end_logits = end_logits.unsqueeze(-1)
-        # conditions = torch.cat((start_logits, end_logits), dim=-1)
-
         return hidden_states[-1], conditions, loss
 
 
 class ConditionalRefinement(nn.Module):
-    def __init__(self,
-                 # num_iters=3,
-                 # loss_ratio=0.5,
-                 seq_len=448,
-                 num_losses=4,
-                 hidden_size=320,
-                 num_hidden_layers=1,
-                 num_attention_heads=4,
-                 intermediate_size=1500,
-                 hidden_dropout_prob=0.1,
-                 attention_probs_dropout_prob=0.1,
-                 out_aux_loss_weight=0.1,
-                 out_dropout_prob=0.2,
-                 out_num_attention_heads=6,
-                 use_tl=True,
-                 use_ha=True
-                 ):
+    """The overall Conditional Refinement Network as described in doc/report.pdf."""
+
+    def __init__(
+        self,
+        seq_len: int = 448,
+        num_losses: int = 4,
+        hidden_size: int = 320,
+        num_hidden_layers: int = 1,
+        num_attention_heads: int = 4,
+        intermediate_size: int = 1500,
+        hidden_dropout_prob: float = 0.1,
+        attention_probs_dropout_prob: float = 0.1,
+        out_aux_loss_weight: float = 0.1,
+        out_dropout_prob: float = 0.2,
+        out_num_attention_heads: int = 6,
+        use_tl: bool = True,
+        use_ha: bool = True,
+    ):
+        """Constructor.
+        
+        Args:
+            seq_len: Max sequence length for the encoder. Also used for initializing the conditional input.
+            num_losses: number of loss functions. Note that start_idx and end_idx predictions count as 2.
+            hidden_size: hidden size for attention.
+            num_hidden_layers: number of encoder layer.
+            num_attention_heads: number of attention heads.
+            intermediate_size: feed-forward size.
+            hidden_dropout_prob: The dropout probabilitiy for all fully connected
+                layers in the embeddings, encoder, and pooler.
+            attention_probs_dropout_prob: The dropout ratio for the attention probabilities.
+            out_aux_loss_weight: Relative loss weight for aux tasks with respect to the standard
+                start_idx and end_idx prediction losses.
+            out_dropout_prob: Dropout rate for output layer.
+            out_num_attention_heads: Number attention heads for output layer.
+            use_tl: Whether to use token-level loss or not.
+            use_ha: Whether to use has-answer loss or not.
+        """
         super().__init__()
 
         # TODO: independent conditional layers. Need to investigate whether it is better than iterative version
@@ -434,7 +436,16 @@ class ConditionalRefinement(nn.Module):
 
 
 class Adaptor(nn.Module):
-    def __init__(self, in_size, out_size, dropout_prob=0.2):
+    """Simple Dense-Dropout-LayerNorm layer to adapt from `in_size` to `out_size`."""
+
+    def __init__(self, in_size: int, out_size: int, dropout_prob: float = 0.2):
+        """Constructor.
+        
+        Args:
+            in_size: input size for adapting from.
+            out_size: output size for adapting to.
+            dropout_prob: drop out rate.
+        """
         super().__init__()
         self.dense = nn.Linear(in_size, out_size)
         self.LayerNorm = BertLayerNorm(out_size, eps=1e-12)
@@ -448,23 +459,46 @@ class Adaptor(nn.Module):
 
 
 class BertQAL3(nn.Module):
+    """End-to-end BertQA model with conditional iterative refinement layers."""
     def __init__(self,
                  enc_bert_model: str,
-                 enc_selected_layers: List[int]=None,
-                 cir_seq_len: int=448,
-                 cir_num_losses: int=4,
-                 cir_hidden_size: int=320,
-                 cir_num_hidden_layers: int=1,
-                 cir_num_attention_heads: int=4,
-                 cir_intermediate_size: int=1280,
-                 cir_hidden_dropout_prob: float=0.1,
-                 cir_attention_probs_dropout_prob: float=0.1,
-                 out_num_attention_heads: int=8,
-                 out_aux_loss_weight: float=0.1,
-                 out_dropout_prob: float=0.2,
-                 use_tl=True,
-                 use_ha=True
+                 enc_selected_layers: List[int] = None,
+                 cir_seq_len: int = 448,
+                 cir_num_losses: int = 4,
+                 cir_hidden_size: int = 320,
+                 cir_num_hidden_layers: int = 1,
+                 cir_num_attention_heads: int = 4,
+                 cir_intermediate_size: int = 1280,
+                 cir_hidden_dropout_prob: float = 0.1,
+                 cir_attention_probs_dropout_prob: float = 0.1,
+                 out_num_attention_heads: int = 8,
+                 out_aux_loss_weight: float = 0.1,
+                 out_dropout_prob: float = 0.2,
+                 use_tl = True,
+                 use_ha = True
                  ):
+        """Constructor.
+        
+        Args:
+            enc_bert_model: model name to load from pretrained models.
+            enc_selected_layers: selected hidden layers will be adapted and fed to the Conditional
+                Refinement network.
+            cir_seq_len: Sequence length for conditional iterative refinement.
+            cir_num_losses: Number of losses. Note that start_idx and end_idx count as two.
+            cir_hidden_size: Hidden size dims.
+            cir_num_hidden_layers: Number of encoder layers.
+            cir_num_attention_heads: Number of attention heads.
+            cir_intermediate_size: Feed-forward layer size.
+            cir_hidden_dropout_prob: The dropout probabilitiy for all fully connected
+                layers in the embeddings, encoder, and pooler.
+            cir_attention_probs_dropout_prob: The dropout ratio for the attention probabilities.
+            out_num_attention_heads: Number attention heads for output layer.
+            out_aux_loss_weight: Relative loss weight for aux tasks with respect to the standard
+                start_idx and end_idx prediction losses.
+            out_dropout_prob: Dropout rate for output layer.
+            use_tl: Whether to use token-level loss or not.
+            use_ha: Whether to use has-answer loss or not.
+        """
         super().__init__()
         # Encoder
         self.enc_bert = BertModel.from_pretrained(
@@ -532,10 +566,16 @@ class BertQAL3(nn.Module):
 
 
 class SelfAttention(nn.Module):
-    """
-    Use a data-independent trainable vector u to attend
-    """
+    """Custom self attention layer: use a input-independent trainable vector `u` to attend."""
+
     def __init__(self, hidden_size, num_attention_heads, dropout_prob):
+        """Constructor.
+        
+        Args:
+            hidden_size: Hidden size dim.
+            num_attention_heads: Number of attention heads.
+            dropout_prob: Drop-out rate.
+        """
         super().__init__()
         if hidden_size % num_attention_heads != 0:
             raise ValueError(
@@ -554,11 +594,7 @@ class SelfAttention(nn.Module):
         self.u = torch.nn.Parameter(torch.randn(self.attention_head_size, requires_grad=True))
 
     def transpose_for_scores(self, x):
-        """
-
-        :param x: (B, S, H)
-        :return:
-        """
+        # x shape: (B, S, H)
         new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)  # (B, S, A, HS)
         x = x.view(*new_x_shape)
         return x.permute(0, 2, 1, 3)  # (B, A, S, HS)
