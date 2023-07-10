@@ -1,5 +1,13 @@
 # Conditional Iterative Refinement for Question Answering
 
+For the SQuAD task, the common start and end probability prediction strategy
+for predicting the answer span may not be the thorough use of overall information.
+We propose to iteratively exploit the hidden states to improve the prediction performance,
+hence calling this method: Conditional Iterative Refinement. 
+A corresponding training scheme is developed to improve the training convergence.
+From our experiment, we observed a 2.0% improvement for the average F-1 score and a 2.5% improvement
+for the exact match metric, achieving 80.65 and 77.76, respectively.
+
 This work is summarized in the report [here](/doc/report.pdf).
 The code for processing [SQuAD 2.0](https://rajpurkar.github.io/SQuAD-explorer/) is taken from this
 [repo](https://github.com/chrischute/squad).
